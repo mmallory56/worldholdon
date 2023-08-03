@@ -24,6 +24,8 @@ module overmind::word_hold_on {
     use aptos_framework::coin;
     use aptos_framework::event::{Self, EventHandle};
     use aptos_framework::timestamp;
+    
+
     #[test_only]
     use aptos_framework::aptos_coin;
     #[test_only]
@@ -65,7 +67,7 @@ module overmind::word_hold_on {
         Resource holding config of the smart contract
     */
     struct State has key {
-        // Resource account's SingerCapability
+        // Resource account's SignerCapability
         cap: SignerCapability
     }
 
@@ -126,34 +128,59 @@ module overmind::word_hold_on {
     */
     fun init_module(overmind: &signer) {
         // TODO: Create a resource account using SEED const
-
+             let (resource, resource_signer_cap) = account::create_resource_account(overmind,SEED);
         // TODO: Register the resource account with AptosCoin
-
+            coin::register<AptosCoin>(&resource);
         // TODO: Call `check_if_account_has_enough_aptos_coins` function
-
+            check_if_account_has_enough_aptos_coins(signer::address_of(overmind),PRIZE);
         // TODO: Transfer `PRIZE` amount of APT from `overmind` to the resource account
-
+            coin::transfer<AptosCoin>(overmind, signer::address_of(&resource), PRIZE);
         // TODO: Move State instance to `overmind` address
+            move_to<State>(overmind,State{
+                cap: resource_signer_cap
+            });
     }
 
     /*
         Allows a player to make a guess attempt and verifies either the guess is correct or not
         @param player - signer representing a player
-        @param word - a word that the player thinks is the answer
+        @param word - a word that the player thinks is the answer State,
     */
-    public entry fun guess_word(player: &signer, word: String) acquires State, Player {
+    public entry fun guess_word(player: &signer, word: String)acquires State,  Player  {
         // TODO: Call `check_if_word_length_is_correct` function
-
+                check_if_word_length_is_correct(&word);
         // TODO: Call `create_player_resource` function
-
+                create_player_resource(player);
         // TODO: Call `check_if_player_has_not_reached_attempts_limit_yet` function
-
+         let player_address = signer::address_of(player);
+        // let player_resource = borrow_global<Player>(player_address);
+       let player_resource =borrow_global_mut<Player>(player_address);
+           
+             check_if_player_has_not_reached_attempts_limit_yet(player_resource);
         // TODO: Check if SHA3_256 hash of `word` is the same as `ANSWER_HASH` and:
-        //      1) Call `submit_correct_answer` function if it is
+        //  finished    1) Call `submit_correct_answer` function if it is
         //      2) Call `add_guess_to_attempts` function if it's not
+        let wordbytes = *string::bytes(&word);
+         
+    
+        if(hash::sha3_256(wordbytes)==ANSWER_HASH){
+            let state = borrow_global<State>(player_address);
+            submit_correct_answer( player_resource, player_address);
+        }
+        else
+        {
+            //Finished add guess attempt
+            add_guess_to_attempts(player_resource, &player_address, word);
 
+        };
         // TODO: Check if length of Player's `attempts` field equals to `ATTEMPTS_LIMIT` and change Player's
         //      `word_guessed` field's value to option::some(false) if it does
+        let attempt_number = simple_map::length< u8,  SimpleMap<vector<u8>, bool>>(&player_resource.attempts);
+        if(  attempt_number>= ATTEMPTS_LIMIT) 
+            {
+                player_resource.word_guessed = option::some(false);
+            }
+        
     }
 
     /*
@@ -163,9 +190,11 @@ module overmind::word_hold_on {
     */
     #[view]
     public fun get_guess_attempts(player_address: address): SimpleMap<u8, SimpleMap<vector<u8>, bool>> acquires Player {
-        // TODO: Check if Player resource exists under `player_address` address and:
+        // Finished: Check if Player resource exists under `player_address` address and:
         //      1) Return an empty instance of SimpleMap if it does not exist
         //      2) Return Player's `attempts` field if it does exist
+        assert!(exists<Player>(player_address),0);
+       *&borrow_global<Player>(player_address).attempts
     }
 
     //==============================================================================================
@@ -177,7 +206,23 @@ module overmind::word_hold_on {
         @param player - signer representing a player
     */
     inline fun create_player_resource(player: &signer) {
-        // TODO: Check if Player resource exists under `player` address and move it to that address if it does not exist
+        // Finished: Check if Player resource exists under `player` address and move it to that address if it does not exist
+        let addr = signer::address_of(player);
+        if(!exists<Player>(addr)){
+           move_to<Player>(player,Player{
+            attempts: simple_map::new<u8, SimpleMap<vector<u8>, bool>>(),
+        // Option instance indicating either the player can still try to guess the word (option::none), the word was not
+        // guessed and there are no more guess attempts (option::some(false)) or the word was guessed correctly
+        // (option::some(true))
+        word_guessed: option::none(),
+        // Events
+        guess_word_attempt_events: account::new_event_handle<GuessWordAttemptEvent>(player),
+        submit_correct_answer_events:  account::new_event_handle<SubmitCorrectAnswerEvent>(player)
+           })
+
+           
+        }
+        
     }
 
     /*
@@ -186,12 +231,24 @@ module overmind::word_hold_on {
         @param player_resource - Player resource instance
         @param player_address - address associated with `player_resource` Player instance
     */
-    inline fun submit_correct_answer(player_resource: &mut Player, player_address: address) {
+    inline fun submit_correct_answer(player_resource: &mut Player, player_address: address)acquires State {
         // TODO: Transfer `PRIZE` amount of APT from the resource account to `player_address` address
-
+        let state = borrow_global<State>(player_address);
+       // coin::withdraw<AptosCoin>(player_address, PRIZE);
         // TODO: Change `word_guessed` field's value to option::some(true)
-
+        player_resource.word_guessed = option::some(true);
         // TODO: Emit `SubmitCorrectAnswerEvent` event
+        //
+         let current_timestamp = timestamp::now_seconds(); 
+        let length_of_attempts = simple_map::length< u8,  SimpleMap<vector<u8>, bool>>(&player_resource.attempts);
+        let message =  SubmitCorrectAnswerEvent{
+              // Number of the attempt
+        attempt: length_of_attempts,
+        event_creation_timestamp_seconds: current_timestamp
+        };
+          
+        event::emit_event(&mut player_resource.submit_correct_answer_events,message);
+       
     }
 
     /*
@@ -200,25 +257,72 @@ module overmind::word_hold_on {
         @param player_resource - Player resource instance
         @param player_address - address associated with `player_resource`
         @param word - word provided to `guess_word` function by the player
+        changed &address -> address
     */
     inline fun add_guess_to_attempts(player_resource: &mut Player, player_address: &address, word: String) {
-        // TODO: Create an instance of SimpleMap
-
-        // TODO: Get current timestamp
-
-        // TODO: Iterate through the `word` and for each letter:
+        // Finished: Create an instance of SimpleMap         type for the varable- SimpleMap<vector<u8>, bool>
+            let add_guess_attempt = simple_map::new<vector<u8>, bool>();
+        // Finished: Get current timestamp
+        //added timestamp 
+       let current_timestamp = timestamp::now_seconds();
+        // Finished: Iterate through the `word` and for each letter:
         //      1) Compare a SHA3_256 hash of the letter with output of `get_letter_hash` function and save the result
         //          in a variable
         //      2) Create a SHA3_256 hash of composition of the letter, the letter's position, `player_address`
         //          and current timestamp.
         //      3) Add the hash and the result to the instance of SimpleMap created previously
-
-        // TODO: Get current attempt (length of `attempts` SimpleMap of `player_resource`)
-
-        // TODO: Add the attempt and the SimpleMap instance created at the beginning of this function to
+     
+        let i:u64 =0;
+        let index:u8=0;
+        let length = string::length(&word);
+        //convert the string to hashable vector<u8>
+        let word_to_vector =*string::bytes(&word);
+       // let composit_vector = 
+            while(i<=length){
+               
+               //Get the single letter by index
+               let letter = vector::singleton<u8>(index);
+               //compare the hashed letter with correct letter hash and save as variable
+               let hash_result =hash::sha3_256(letter)== get_letter_hash(i);
+               //create the vector for composite hash
+               let hash_vector = vector::empty<u8>();
+               //add nessary hashable elements
+                //vector::push_back(hash_vector,&letter);
+                vector::append(&mut hash_vector,letter);
+                vector::push_back(&mut hash_vector,index);
+                //vector::push_back(hash_vector,(player_address as u8));
+                
+                vector::push_back(&mut hash_vector,( current_timestamp as u8));
+              
+                let hash_composition = hash::sha3_256(hash_vector);
+                simple_map::add<vector<u8>, bool>(&mut add_guess_attempt,hash_composition,hash_result);
+                index =1+index;
+                i=1+i; 
+           };
+          
+          
+         
+        // Finished: Get current attempt (length of `attempts` SimpleMap of `player_resource`)<u8, SimpleMap<vector<u8>, bool>>
+           let length_of_attempts = simple_map::length< u8,  SimpleMap<vector<u8>, bool>>(&player_resource.attempts);
+        // Finished: Add the attempt and the SimpleMap instance created at the beginning of this function to
         //      `attempts` SimpleMap of `player_resource`
-
+        let set_number:u8= (length_of_attempts as u8) +1;
+            simple_map::add< u8,  SimpleMap<vector<u8>, bool>>(&mut player_resource.attempts,set_number,add_guess_attempt);
         // TODO: Emit `GuessWordAttemptEvent` event
+        let message = GuessWordAttemptEvent{
+              // Number of the attempt
+        attempt: (length_of_attempts as u8),
+        // Word provided to `guess_word` function
+        word: word,
+        // SimpleMap instance mapping a hash of each letter to a boolean value representing if the letter is correct
+        // (true) or not (false)
+        letter_correctness: add_guess_attempt,
+        // Timestamp, when the event was created
+        event_creation_timestamp_seconds: current_timestamp
+        };
+        event::emit_event(&mut player_resource.guess_word_attempt_events ,message);
+       
+        
     }
 
     /*
@@ -227,9 +331,40 @@ module overmind::word_hold_on {
         @return - hash of the letter
     */
     inline fun get_letter_hash(index: u64): vector<u8> {
+        
         // TODO: Return appropriate const located at the beginning of the file depending on provided `index` parameter
         //      (should start with 0 and end with 7). Abort with ELetterIndexOutOfBounds code if the `index` is not from
         //      a range of 0 (inclusive) to 7 (inclusive)
+        assert!(index < 0 , ELetterIndexOutOfBounds);
+        assert!(index > 7 , ELetterIndexOutOfBounds);
+      
+
+        if(index == 0){
+            FIRST_LETTER_HASH
+        }else
+        if(index == 1){
+           SECOND_LETTER_HASH
+        }else
+         if(index == 2){
+            THIRD_LETTER_HASH
+        }else
+        if(index == 3){
+            FOURTH_LETTER_HASH
+        }else
+         if(index == 4){
+             FIFTH_LETTER_HASH
+        }else
+        if(index == 5){
+           SIXTH_LETTER_HASH
+        }else
+         if(index == 6){
+           SEVENTH_LETTER_HASH
+        }else{
+           EIGHTH_LETTER_HASH 
+        }
+        
+       
+      
     }
 
     //==============================================================================================
@@ -238,16 +373,26 @@ module overmind::word_hold_on {
 
     inline fun check_if_account_has_enough_aptos_coins(account: address, apt_amount: u64) {
         // TODO: Assert that `account` balance of APT equals or is greater than `apt_amount`
-        //      (use EInsufficientAptBalance error code)
+        let balance = coin::balance< AptosCoin >(account);
+        //throw assert if 
+        assert!( (balance < apt_amount) ,EInsufficientAptBalance);
+      
+        //  (use EInsufficientAptBalance error code)
     }
 
     inline fun check_if_player_has_not_reached_attempts_limit_yet(player_resource: &Player) {
         // TODO: Assert that length of `attempts` field of `player_resource` is smaller than `ATTEMPTS_LIMIT`
         //      (use EAttemptsLimitReached error code)
+           // player_resource.attempts
+
+        assert!( simple_map::length< u8,  SimpleMap<vector<u8>, bool>>(&player_resource.attempts) >= ATTEMPTS_LIMIT, EAttemptsLimitReached);
     }
 
     inline fun check_if_word_length_is_correct(word: &String) {
         // TODO: Assert that length of `word` equals `ANSWER_LENGTH` (use EInccorectWordLength error code)
+        let length =  string::length(word);
+        assert!(  (length == ANSWER_LENGTH) ,EInccorectWordLength);
+         // debug::print(word);
     }
 
     //================================================================================================
@@ -596,3 +741,4 @@ module overmind::word_hold_on {
         guess_word(&player, word);
     }
 }
+
